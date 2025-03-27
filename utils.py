@@ -3,214 +3,409 @@ import google.generativeai as genai
 import json
 import logging
 import time
-import os  # Import the 'os' module
-from config import DELAY_SECONDS, MAX_RETRIES, GOOGLE_MODEL_NAME, FINE_TUNED_MODEL_PATH
-from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
-import torch
-import numpy as np
+import os
+import sys
+from openai import OpenAI # Client class
+import openai # <<< ADDED: Main library for exception types
+import requests # For local server check
 
-# Initialize the *general* sentiment analysis pipeline (from transformers)
-sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+# --- Configuration Import ---
+# Ensure logging is minimally configured BEFORE the first potential error log
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# We'll load the fine-tuned model and tokenizer here, but handle potential
-# loading failures gracefully.
+print("DEBUG: utils.py attempting to import from config...") # Add debug print
+
+try:
+    # Import config module directly
+    import config
+    print("DEBUG: utils.py successfully imported 'config' module.")
+
+    # Access variables via attributes, using getattr for optional ones
+    DELAY_SECONDS = config.DELAY_SECONDS
+    MAX_RETRIES = config.MAX_RETRIES
+    GOOGLE_MODEL_NAME = config.GOOGLE_MODEL_NAME
+
+    # Access local LLM vars defensively
+    LOCAL_LLM_URL = getattr(config, 'LOCAL_LLM_URL', None)
+    LOCAL_LLM_MODEL_NAME = getattr(config, 'LOCAL_LLM_MODEL_NAME', None)
+    LOCAL_LLM_API_KEY = getattr(config, 'LOCAL_LLM_API_KEY', 'ollama') # Default API key
+
+    LOCAL_MODEL_CONFIGURED = bool(LOCAL_LLM_URL and LOCAL_LLM_MODEL_NAME)
+    print(f"DEBUG: utils.py accessed config variables. LOCAL_MODEL_CONFIGURED={LOCAL_MODEL_CONFIGURED}")
+    if LOCAL_MODEL_CONFIGURED:
+        print(f"DEBUG: Local LLM URL: {LOCAL_LLM_URL}, Model: {LOCAL_LLM_MODEL_NAME}")
+    else:
+        print("DEBUG: Local LLM not configured or variables missing in config.py.")
+
+    # Access Optional Fine-tuning Vars if needed later
+    # FINE_TUNED_MODEL_PATH = getattr(config, 'FINE_TUNED_MODEL_PATH', None)
+    # ... etc.
+
+except ImportError:
+    # This catches if 'config.py' itself cannot be found
+    logging.critical(f"CRITICAL: utils.py failed to import the 'config' module. Check if config.py exists. Exiting.")
+    print(f"CRITICAL: utils.py failed to import the 'config' module. Check if config.py exists. Exiting.")
+    sys.exit(1)
+except AttributeError as e:
+    # This catches if a REQUIRED variable (like DELAY_SECONDS) is missing
+    logging.critical(f"CRITICAL: utils.py failed to access required attribute from config module: {e}. Exiting.")
+    print(f"CRITICAL: utils.py failed to access required attribute from config module: {e}. Exiting.")
+    sys.exit(1)
+except Exception as e:
+    # Catch any other unexpected errors during config access
+    logging.critical(f"CRITICAL: Unexpected error accessing config variables in utils.py: {e}", exc_info=True)
+    print(f"CRITICAL: Unexpected error accessing config variables in utils.py: {e}")
+    sys.exit(1)
+
+
+# --- Import prompts safely ---
+print("DEBUG: utils.py attempting to import from prompts...")
+try:
+    from prompts import FIRST_LEVEL_PROMPT, BELBIN_ROLE_PROMPTS, SYNONYM_PROMPT, TONE_PROMPT
+    print("DEBUG: utils.py successfully imported prompts.")
+except ImportError as e:
+    logging.critical(f"CRITICAL: utils.py failed to import required names from prompts.py: {e}. Exiting.")
+    print(f"CRITICAL: utils.py failed to import required names from prompts.py: {e}. Exiting.")
+    sys.exit(1)
+
+# <<< REMOVED DUPLICATE PROMPT IMPORT BLOCK >>>
+
+# --- Optional dependencies (Transformers/PyTorch) ---
+# ... (Keep this section if you still have the unused fine-tuning/sentiment functions) ...
+try:
+    from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
+    import torch
+    import numpy as np
+    transformers_available = True
+except ImportError:
+    transformers_available = False
+    logging.warning("Transformers or PyTorch not installed. Fine-tuned model and pretrained sentiment analysis features will be disabled.")
+
+# --- Initialize Optional Components ---
+# ... (Keep sentiment_pipeline init if needed) ...
+sentiment_pipeline = None
+if transformers_available:
+     try:
+         sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+         logging.info("Initialized general sentiment pipeline.")
+     except Exception as e:
+         logging.warning(f"Could not load general sentiment pipeline: {e}")
+         sentiment_pipeline = None
+
+# ... (Keep fine-tuned model components init if needed) ...
 tokenizer = None
 model = None
-label_map_global = {} # Global variable to store the label map.
+label_map_global = {}
+inverted_label_map = {}
+model_loaded = False
+# ... (Keep load_fine_tuned_model function if needed) ...
 
-def load_fine_tuned_model(model_path=FINE_TUNED_MODEL_PATH):
-    """Loads the fine-tuned model, tokenizer, and label_map."""
-    global tokenizer, model, label_map_global  # Use global variables
+
+# --- ADD Local LLM Client Initialization ---
+# (Code is same as before, relies on variables defined above)
+local_client = None
+local_model_available = False
+if LOCAL_MODEL_CONFIGURED:
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model = AutoModelForSequenceClassification.from_pretrained(model_path)
-
-        # Load the label_map from the JSON file
-        label_map_path = os.path.join(model_path, "label_map.json")
-        if os.path.exists(label_map_path):
-            with open(label_map_path, "r") as f:
-                label_map_global = json.load(f)
-            print(f"DEBUG: Loaded label_map: {label_map_global}")
-        else:
-            print(f"WARNING: label_map.json not found in {model_path}.  Belbin role/sentiment mapping will be incorrect!")
-            return False # Indicate failure
-
-
-        if torch.cuda.is_available():
-            model = model.to('cuda')
-            print("Using GPU")
-        else:
-            print("Using CPU")
-        return True  # Indicate successful loading
-
+        ping_url = LOCAL_LLM_URL.replace("/v1", "")
+        try:
+            # Uses 'requests' library (import added at top)
+            response = requests.get(ping_url, timeout=3) # Increased timeout slightly
+            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            logging.info(f"Local LLM server appears reachable at {ping_url}")
+            local_client = OpenAI(
+                base_url=LOCAL_LLM_URL,
+                api_key=LOCAL_LLM_API_KEY,
+            )
+            local_model_available = True
+            logging.info(f"Initialized OpenAI client for local LLM: {LOCAL_LLM_URL}, Model: {LOCAL_LLM_MODEL_NAME}")
+        except requests.exceptions.RequestException as e:
+             logging.error(f"Local LLM server unreachable or returned error at {ping_url}: {e}. Local model calls disabled.")
+             local_model_available = False
     except Exception as e:
-        print(f"Error loading fine-tuned model: {e}")
-        return False  # Indicate loading failure
-
-# Load the fine-tuned model when utils.py is imported.
-model_loaded = load_fine_tuned_model()
+        logging.error(f"Failed to initialize local LLM client: {e}", exc_info=True)
+        local_model_available = False
+# --- End Local LLM Client Initialization ---
 
 
+# --- API Calling Functions ---
 
-def call_gemini_api(prompt, model_name=GOOGLE_MODEL_NAME, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
-    """Calls the Gemini API with retries and error handling."""
+# call_gemini_api remains the same as previously corrected version
+def call_gemini_api(prompt_template, sentence, model_name=GOOGLE_MODEL_NAME, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
+    # ... (function body) ...
     retries = 0
+    current_delay = delay
+    try:
+        formatted_prompt = prompt_template.format(sentence=sentence)
+    except KeyError:
+        logging.error(f"Prompt template missing '{{sentence}}' placeholder: {prompt_template[:100]}...")
+        return None, "PROMPT_FORMAT_ERROR" # Return error type
+    except Exception as fmt_err:
+         logging.error(f"Error formatting prompt: {fmt_err}")
+         return None, "PROMPT_FORMAT_ERROR" # Return error type
+
+    logging.debug(f"Calling Gemini API. Retry {retries}/{max_retries}. Prompt: {formatted_prompt[:200]}...")
+
     while retries < max_retries:
         try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            return response.text
+            model_instance = genai.GenerativeModel(model_name)
+            response = model_instance.generate_content(formatted_prompt)
+
+            # --- Enhanced Response Checking ---
+            finish_reason = "UNKNOWN"
+            block_reason = None
+            safety_ratings = []
+            try:
+                if response.candidates:
+                    candidate = response.candidates[0]
+                    finish_reason = candidate.finish_reason.name
+                    if hasattr(candidate, 'safety_ratings'):
+                         safety_ratings = candidate.safety_ratings
+                if hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
+                    block_reason = response.prompt_feedback.block_reason.name
+                    finish_reason = f"BLOCKED_{block_reason}"
+            except (AttributeError, IndexError, ValueError) as resp_err:
+                 logging.warning(f"Could not fully parse response metadata: {resp_err}")
+
+            if block_reason:
+                logging.error(f"Gemini API call blocked for prompt. Reason: {block_reason}. Prompt: {formatted_prompt[:200]}...")
+                return None, "SAFETY_BLOCKED_PROMPT"
+            if finish_reason == "SAFETY":
+                logging.warning(f"Gemini response finished due to SAFETY. Ratings: {safety_ratings}. Prompt: {formatted_prompt[:200]}...")
+                return None, "SAFETY_BLOCKED_RESPONSE"
+            if finish_reason not in ["STOP", "MAX_TOKENS"]:
+                 logging.warning(f"Gemini response finished with unexpected reason: {finish_reason}. Prompt: {formatted_prompt[:200]}...")
+
+            try:
+                if not response.parts:
+                     logging.warning(f"Gemini response has no parts (finish_reason: {finish_reason}). Returning empty text.")
+                     return None, "EMPTY_RESPONSE"
+                response_text = response.text
+                logging.debug(f"Gemini API Raw Response: {response_text}")
+                return response_text, "SUCCESS"
+            except ValueError as e:
+                 logging.error(f"Error accessing response.text (finish_reason: {finish_reason}, block_reason: {block_reason}): {e}")
+                 if block_reason: return None, f"SAFETY_BLOCKED_{block_reason}"
+                 if finish_reason == "SAFETY": return None, "SAFETY_BLOCKED_RESPONSE"
+                 return None, "ACCESS_ERROR"
+            except Exception as text_err:
+                 logging.error(f"Unexpected error accessing response.text: {text_err}")
+                 return None, "ACCESS_ERROR"
+
         except Exception as api_err:
-            if hasattr(api_err, 'status_code') and api_err.status_code == 429:
-                retries += 1
-                delay *= 2
-                logging.warning(f"Rate limit exceeded. Retrying in {delay} seconds.")
-                time.sleep(delay)
+            retries += 1
+            logging.warning(f"Gemini API Error/Exception (Attempt {retries}/{max_retries}): {api_err}")
+            is_rate_limit = "429" in str(api_err)
+            if retries >= max_retries:
+                logging.error(f"Max retries exceeded for API call. Prompt: {formatted_prompt[:200]}...")
+                return None, "API_MAX_RETRIES"
+            sleep_time = current_delay * (1.5 ** (retries - 1))
+            sleep_time *= (1 + (0.4 * (time.time() % 1) - 0.2))
+            sleep_time = max(1, sleep_time)
+            if is_rate_limit:
+                 sleep_time = max(sleep_time, 5)
+                 logging.warning(f"Rate limit likely hit. Retrying in {sleep_time:.2f} seconds.")
             else:
-                logging.error(f"Gemini API Error: {api_err}")
-                return None  # Or raise the exception if you prefer
-    logging.error("Max retries exceeded for API call.")
-    return None
+                 logging.info(f"Retrying in {sleep_time:.2f} seconds.")
+            time.sleep(sleep_time)
+    return None, "UNKNOWN_API_FAILURE"
 
 
-def parse_json_response(response_text):
-    """Parses a JSON response from the Gemini API, handling errors."""
+# call_local_llm_api includes the corrected exception handling
+def call_local_llm_api(prompt_template, sentence, model_name=LOCAL_LLM_MODEL_NAME, max_retries=MAX_RETRIES, delay=0.5):
+    """Calls the local LLM API (OpenAI compatible) with retries."""
+    if not local_model_available or not local_client:
+        logging.error("Attempted to call local LLM, but client is not available/configured.")
+        return None, "LOCAL_MODEL_UNAVAILABLE"
+
+    retries = 0
+    current_delay = delay
     try:
-        json_start_index = response_text.find('{')
-        json_end_index = response_text.rfind('}') + 1
-        if json_start_index != -1 and json_end_index != -1:
-            json_text = response_text[json_start_index:json_end_index]
-            return json.loads(json_text)
-        else:
-            logging.warning(f"JSON start/end not found. Response: {response_text}")
-            return None
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
-        logging.error(f"Error parsing JSON. {type(e).__name__}: {e}. Response: {response_text}")
+        formatted_prompt = prompt_template.format(sentence=sentence)
+    except KeyError:
+        logging.error(f"Local LLM prompt template missing '{{sentence}}' placeholder: {prompt_template[:100]}...")
+        return None, "PROMPT_FORMAT_ERROR"
+    except Exception as fmt_err:
+        logging.error(f"Error formatting local LLM prompt: {fmt_err}")
+        return None, "PROMPT_FORMAT_ERROR"
+
+    logging.debug(f"Calling Local LLM API. Retry {retries}/{max_retries}. Model: {model_name}. Prompt: {formatted_prompt[:200]}...")
+
+    while retries < max_retries:
+        try:
+            response = local_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": "You are an expert assistant. Respond ONLY in the requested format."},
+                    {"role": "user", "content": formatted_prompt}
+                ],
+                model=model_name,
+                max_tokens=1000, # Reduced max_tokens
+                temperature=0.6,
+            )
+            if response.choices and response.choices[0].message and response.choices[0].message.content:
+                response_text = response.choices[0].message.content
+                logging.debug(f"Local LLM API Raw Response: {response_text}")
+                return response_text, "SUCCESS"
+            else:
+                logging.warning(f"Local LLM response structure unexpected or content empty. Choices: {response.choices}")
+                raise ValueError("Empty or invalid response structure")
+
+        except Exception as api_err:
+            retries += 1
+            logging.warning(f"Local LLM API Error (Attempt {retries}/{max_retries}): {api_err}")
+            if retries >= max_retries:
+                logging.error(f"Max retries exceeded for Local LLM call. Prompt: {formatted_prompt[:200]}...")
+                # --- CORRECTED EXCEPTION CHECK ---
+                # Check specific errors using the imported 'openai' module name
+                if isinstance(api_err, openai.APIConnectionError):
+                    return None, "LOCAL_MODEL_CONNECTION_ERROR"
+                elif isinstance(api_err, openai.NotFoundError):
+                     return None, "LOCAL_MODEL_NOT_FOUND"
+                # --- END CORRECTED ---
+                return None, "LOCAL_MODEL_API_ERROR" # Fallback generic error
+
+            sleep_time = current_delay * (1.5 ** (retries - 1))
+            sleep_time = max(0.5, sleep_time)
+            logging.info(f"Retrying local LLM call in {sleep_time:.2f} seconds.")
+            time.sleep(sleep_time)
+
+    return None, "LOCAL_MODEL_UNKNOWN_FAILURE"
+
+
+# parse_json_response remains the same
+def parse_json_response(response_text):
+    # ... (function body) ...
+    if not response_text:
+        logging.warning("Attempted to parse empty response text.")
+        return None
+    try:
+        cleaned_text = response_text.strip().lstrip('```json').rstrip('```').strip()
+        if not cleaned_text:
+             logging.warning("Response text was empty after cleaning markdown.")
+             return None
+        data = json.loads(cleaned_text)
+        if not isinstance(data, dict):
+             logging.warning(f"Parsed JSON is not a dictionary. Type: {type(data)}. Response: {cleaned_text}")
+             return None
+        return data
+    except json.JSONDecodeError as e:
+        logging.error(f"Error parsing JSON: {e}. Response text: '{response_text}'")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error parsing JSON: {e}. Response text: '{response_text}'")
         return None
 
-def get_llm_category(sentence, prompt, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
-    """Gets the first-level category (Action, Thought, People) from the LLM."""
-    response_text = call_gemini_api(prompt.replace("[SENTENCE_HERE]", sentence), delay=delay, max_retries=max_retries)
-    if response_text is None:
-        return "unknown", []
+
+# _handle_api_call_result includes LOCAL_MODEL_NOT_FOUND handling
+def _handle_api_call_result(response_text, status_code, step_name, sentence_snippet):
+    """Helper function to handle results from API calls."""
+    if status_code != "SUCCESS":
+        logging.error(f"API call failed for {step_name} step ({status_code}) for: '{sentence_snippet}'")
+        if "SAFETY_BLOCKED" in status_code:
+            return "SAFETY_BLOCKED", None, f"API Call Blocked ({status_code})"
+        elif status_code == "LOCAL_MODEL_NOT_FOUND": # Check specific status
+             return "LOCAL_API_ERROR", None, f"Local LLM Error ({status_code})"
+        elif "LOCAL_MODEL" in status_code:
+             return "LOCAL_API_ERROR", None, f"Local LLM Error ({status_code})"
+        else:
+            return "APIERROR", None, f"API Call Failed ({status_code})"
 
     response_json = parse_json_response(response_text)
-    if response_json:
-        category_label = response_json.get("category", "unknown").lower()
-        category_keywords = response_json.get("keywords", [])
-        if not isinstance(category_keywords, list):
-            category_keywords = []
-            logging.warning("Keywords were not a list.")
-    else:
-        category_label = "unknown"
+    if response_json is None:
+        logging.warning(f"JSON parsing failed for {step_name} step for: '{sentence_snippet}'. Raw Text: '{response_text}'")
+        return "JSONERROR", None, "JSON Parse Error"
+
+    return None, response_json, None # Success
+
+
+# get_llm_category remains the same (uses Gemini)
+def get_llm_category(sentence, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
+    # ... (function body) ...
+    logging.info(f"Getting LLM category for: '{sentence[:50]}...'")
+    sentence_snippet = sentence[:50] + '...'
+    response_text, status_code = call_gemini_api(FIRST_LEVEL_PROMPT, sentence, delay=delay, max_retries=max_retries)
+    error_label, result_data, error_context = _handle_api_call_result(response_text, status_code, "category", sentence_snippet)
+    if error_label:
+        return error_label, [], error_context
+    response_json = result_data
+    category_label = response_json.get("category", "Unknown").lower()
+    category_keywords = response_json.get("keywords", [])
+    if not isinstance(category_keywords, list):
+        logging.warning(f"Category keywords were not a list: {category_keywords}. Resetting.")
         category_keywords = []
+    if category_label == "unknown":
+         logging.info(f"LLM returned 'Unknown' for category for: '{sentence_snippet}'")
+    logging.debug(f"Category result: Label='{category_label}', Keywords={category_keywords}")
+    return category_label, category_keywords, "Success"
 
-    return category_label, category_keywords
 
-
-def get_llm_belbin_role(sentence, prompt, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
-    """Gets the Belbin role, keywords, and context from the LLM (Gemini API)."""
-    full_prompt = f"{prompt}\n\nTeams meeting contribution sentence: {sentence}"
-    response_text = call_gemini_api(full_prompt, delay=delay, max_retries=max_retries)
-
-    if response_text is None:
-        return "Unknown", [], "Unknown"
-
-    response_json = parse_json_response(response_text)
-    if response_json and isinstance(response_json, dict):
-        belbin_role_label = response_json.get("belbin_role", "Unknown")
-        belbin_role_keywords = response_json.get("belbin_role_keywords", [])
-        belbin_role_context = response_json.get("belbin_role_context", "Unknown")
-        # Ensure keywords is a list
-        if not isinstance(belbin_role_keywords, list):
-            belbin_role_keywords = []
+# get_llm_belbin_role remains the same (uses local if available)
+def get_llm_belbin_role(sentence, category_prompt_map=BELBIN_ROLE_PROMPTS, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
+    # ... (function body) ...
+    sentence_snippet = sentence[:50] + '...'
+    category_label, _, category_context = get_llm_category(sentence, delay=delay, max_retries=max_retries)
+    if category_label in ["JSONERROR", "APIERROR", "SAFETY_BLOCKED", "LOCAL_API_ERROR"]:
+        logging.error(f"Cannot get Belbin role due to error in category step ({category_label}) for: '{sentence_snippet}'")
+        return category_label, [], f"Error in Category Step: {category_context}"
+    category_lower = category_label.lower()
+    logging.info(f"Getting Belbin role (category: {category_lower}) for: '{sentence_snippet}'")
+    if category_lower == "unknown" or category_lower not in category_prompt_map:
+        logging.warning(f"Category '{category_lower}' is 'Unknown' or not in prompt map.")
+        return "Unknown", [], "Category Unknown or Not Mapped"
+    specific_prompt = category_prompt_map[category_lower]
+    if local_model_available:
+        logging.debug("Using Local LLM for Belbin role prediction.")
+        response_text, status_code = call_local_llm_api(specific_prompt, sentence, max_retries=max_retries)
     else:
-        belbin_role_label = "Unknown"
+        logging.debug("Using Gemini API for Belbin role prediction (local unavailable).")
+        response_text, status_code = call_gemini_api(specific_prompt, sentence, delay=delay, max_retries=max_retries)
+    error_label, result_data, error_context = _handle_api_call_result(response_text, status_code, f"role (cat: {category_lower})", sentence_snippet)
+    if error_label:
+        return error_label, [], error_context
+    response_json = result_data
+    belbin_role_label = response_json.get("belbin_role", "Unknown")
+    belbin_role_keywords = response_json.get("belbin_role_keywords", [])
+    belbin_role_context = response_json.get("belbin_role_context", "Unknown")
+    if not isinstance(belbin_role_keywords, list):
+        logging.warning(f"Belbin role keywords were not a list: {belbin_role_keywords}. Resetting.")
         belbin_role_keywords = []
-        belbin_role_context = "Unknown"
-
+    if belbin_role_label.lower() == "unknown":
+         logging.info(f"LLM returned 'Unknown' for Belbin role (category {category_lower}) for: '{sentence_snippet}'")
+    logging.debug(f"Belbin Role result: Label='{belbin_role_label}', Keywords={belbin_role_keywords}, Context='{belbin_role_context}'")
     return belbin_role_label, belbin_role_keywords, belbin_role_context
 
 
-def get_sentiment_with_pretrained(sentence):
-    """Gets sentiment using the pre-trained Hugging Face model (general sentiment)."""
-
-    #Using the original distibert model
-    result = sentiment_pipeline(sentence)[0]  # Run the pipeline.  Result is a list of dicts.
-    label = result['label']  # 'POSITIVE' or 'NEGATIVE'
-    score = result['score']
-
-    # Convert to our desired format.
-    if label == 'POSITIVE':
-        tone_label = "positive"
-        sentiment_score = score
-    elif label == 'NEGATIVE':
-        tone_label = "negative"
-        sentiment_score = -score  # Make it negative
+# get_llm_synonyms remains the same (uses local if available)
+def get_llm_synonyms(sentence, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
+    # ... (function body) ...
+    logging.info(f"Getting LLM Belbin role via SYNONYM prompt for: '{sentence[:50]}...'")
+    sentence_snippet = sentence[:50] + '...'
+    if local_model_available:
+        logging.debug("Using Local LLM for synonym prediction.")
+        response_text, status_code = call_local_llm_api(SYNONYM_PROMPT, sentence, max_retries=max_retries)
     else:
-        tone_label = "neutral" # Should not happen with this model, but good to have
-        sentiment_score = 0.0
-
-    # --- NEUTRAL THRESHOLDING ---
-    neutral_threshold = 0.4  # Adjust this value as needed
-    if -neutral_threshold < sentiment_score < neutral_threshold:
-        tone_label = "neutral"
-        sentiment_score = 0.0
-
-    return {
-        "tone_label": tone_label,
-        "sentiment_score": sentiment_score,
-        "sentiment_confidence": score,  # Use the model's confidence directly
-    }
-
-# --- NEW FUNCTION for Belbin-specific sentiment ---
-def get_belbin_sentiment(sentence):
-    """Gets the combined Belbin role and role-specific sentiment using the fine-tuned model."""
-
-    if not model_loaded:
-        logging.error("Fine-tuned model not loaded.  Returning default values.")
-        return {
-            "belbin_role": "Unknown",
-            "belbin_tone": "neutral",
-            "belbin_score": 0.0,
-            "belbin_confidence": 0.8
-        }
-
-    # Tokenize the input sentence
-    inputs = tokenizer(sentence, return_tensors="pt", padding=True, truncation=True)
-
-     # Move inputs to the same device as the model
-    if torch.cuda.is_available():
-        inputs = {key: value.to('cuda') for key, value in inputs.items()}
-
-    # Get model predictions
-    with torch.no_grad():  # Disable gradient calculation during inference
-        outputs = model(**inputs)
-
-    # Get predicted label and confidence
-    logits = outputs.logits
-    predictions = torch.argmax(logits, dim=-1)
-    probabilities = torch.nn.functional.softmax(logits, dim=-1)
-    confidence = torch.max(probabilities, dim=-1)[0].item()  # Get confidence of predicted class
-
-    # Map numerical label back to combined label string, adding default.
-    label_map = {v: k for k, v in label_map_global.items()}
-
-    predicted_combined_label = label_map.get(predictions[0].item(), "Unknown_neutral") # Default if not found
-    belbin_role, belbin_tone = predicted_combined_label.split("_")  # Split back into role and tone
+        logging.debug("Using Gemini API for synonym prediction (local unavailable).")
+        response_text, status_code = call_gemini_api(SYNONYM_PROMPT, sentence, delay=delay, max_retries=max_retries)
+    error_label, result_data, error_context = _handle_api_call_result(response_text, status_code, "synonym", sentence_snippet)
+    if error_label:
+        return error_label, [], error_context
+    response_json = result_data
+    belbin_role_label = response_json.get("belbin_role", "Unknown")
+    if belbin_role_label.lower() == "need more training":
+         belbin_role_label = "Unknown"
+         logging.info(f"LLM synonym prompt returned 'Need More Training', mapped to 'Unknown'.")
+    belbin_role_keywords = response_json.get("belbin_role_keywords", [])
+    belbin_role_context = response_json.get("belbin_role_context", "Unknown")
+    if isinstance(belbin_role_context, str) and belbin_role_context.lower() == "need more training":
+        belbin_role_context = "Unknown"
+    if not isinstance(belbin_role_keywords, list):
+        logging.warning(f"Synonym keywords were not a list: {belbin_role_keywords}. Resetting.")
+        belbin_role_keywords = []
+    if belbin_role_label.lower() == "unknown":
+        logging.info(f"LLM returned 'Unknown' (or mapped equivalent) for synonym step for: '{sentence_snippet}'")
+    logging.debug(f"Synonym Role result: Label='{belbin_role_label}', Keywords={belbin_role_keywords}, Context='{belbin_role_context}'")
+    return belbin_role_label, belbin_role_keywords, belbin_role_context
 
 
-    # Convert sentiment to numerical score (optional, but good for consistency)
-    if belbin_tone == "positive":
-        belbin_score = confidence
-    elif belbin_tone == "negative":
-        belbin_score = -confidence
-    else:
-        belbin_score = 0.0
-
-    return {
-        "belbin_role": belbin_role,
-        "belbin_tone": belbin_tone,
-        "belbin_score": belbin_score,
-        "belbin_confidence": confidence
-    }
+# --- Optional/Unused Functions ---
+# ... (Keep these if needed, no changes required by local LLM integration) ...

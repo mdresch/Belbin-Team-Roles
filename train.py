@@ -1,176 +1,179 @@
 # train.py
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
 import torch
+from transformers import (
+    DistilBertForSequenceClassification,
+    DistilBertTokenizerFast,
+    Trainer,
+    TrainingArguments,
+)
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.utils.class_weight import compute_class_weight
+import pandas as pd
 import numpy as np
-import json  # Import the json module
+import logging
 import os
+import json
+import sys
 
-from config import (
-    BASE_MODEL_NAME,
-    NUM_LABELS,
-    LEARNING_RATE,
-    NUM_EPOCHS,
-    BATCH_SIZE,
-    TRAIN_DATA_PATH,
-    FINE_TUNED_MODEL_PATH,
-    VALIDATION_DATA_PATH,
-    TEST_DATA_PATH
+# Set up logging (to both console and file)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # Log to console
+        logging.FileHandler("train.log"),  # Log to a file
+    ],
 )
 
-# Load data.  We only need train and test now.
-def load_data(train_path, test_path):  # Removed validation_path
+def load_data(train_file="train.csv", test_file="test.csv"):
     try:
-        train_df = pd.read_csv(train_path)
-        test_df = pd.read_csv(test_path)
-        #val_df = pd.read_csv(validation_path) # No longer needed
+        train_df = pd.read_csv(train_file, header=None)
+        test_df = pd.read_csv(test_file, header=None)
 
-        # Check if dataframes are empty
-        if train_df.empty or test_df.empty:
-            raise ValueError("One or more dataframes are empty. Check CSV files.")
+        # --- ROBUST COLUMN CHECK ---
+        if len(train_df.columns) != 4:
+            raise ValueError(f"train.csv has {len(train_df.columns)} columns, expected 4.")
+        if len(test_df.columns) != 4:
+            raise ValueError(f"test.csv has {len(test_df.columns)} columns, expected 4.")
 
-        # Check for necessary columns, including 'belbin_role'
-        if not all(col in train_df.columns for col in ['sentence', 'belbin_role', 'label']):
-            raise ValueError("Train CSV must have 'sentence', 'belbin_role', and 'label' columns.")
-        if not all(col in test_df.columns for col in ['sentence', 'belbin_role', 'label']):
-            raise ValueError("Test CSV must have 'sentence', 'belbin_role', and 'label' columns.")
+        train_df.columns = ['sentence', 'belbin_role', 'label', 'combined_label']
+        test_df.columns = ['sentence', 'belbin_role', 'label', 'combined_label']
 
-        return train_df, test_df  # Return only train and test DataFrames
-    except FileNotFoundError as e:
-        print(f"Error: File not found. {e}")
-        exit(1)
-    except pd.errors.EmptyDataError as e:
-        print(f"Error: CSV file is empty. {e}")
-        exit(1)
-    except pd.errors.ParserError as e:
-        print(f"Error: CSV parsing error. {e}")
-        exit(1)
-    except ValueError as e:
-        print(f"Error: {e}")
-        exit(1)
-
-
-def prepare_data(train_df, test_df):
-    """Prepares the data for training: combines role and sentiment, converts to numerical."""
-
-    # Combine belbin_role and label into a single string label
-    train_df['combined_label'] = train_df['belbin_role'] + "_" + train_df['label']
-    test_df['combined_label'] = test_df['belbin_role'] + "_" + test_df['label']
-
-    # Create a mapping from the combined label to a unique integer ID
-    label_map = {label: i for i, label in enumerate(train_df['combined_label'].unique())}
-    print("DEBUG: label_map:", label_map) # Print the label map
-    # Important: Update config.NUM_LABELS with the number of unique labels.
-    global NUM_LABELS  # Access the global variable
-    NUM_LABELS = len(label_map)
-    print (f"DEBUG: setting NUM_LABELS to {NUM_LABELS}")
-
-    # Convert combined labels to numerical values
-    train_df['label'] = train_df['combined_label'].map(label_map)
-    test_df['label'] = test_df['combined_label'].map(label_map)
-
-    # Drop the combined_label and belbin_role columns
-    train_df = train_df.drop(columns=['combined_label', 'belbin_role'])
-    test_df = test_df.drop(columns=['combined_label', 'belbin_role'])
-
-    # Check for missing values AFTER mapping (in case some labels weren't mapped)
-    if train_df.isnull().values.any() or test_df.isnull().values.any():
-        raise ValueError("Missing values found in data after label mapping.  Check your CSV for inconsistent labels.")
-
-    return train_df, test_df, label_map  # Return the label_map!
-
-
-def tokenize_data(train_df, test_df, tokenizer):
-    """Tokenizes the data using the provided tokenizer."""
-    train_encodings = tokenizer(train_df['sentence'].tolist(), truncation=True, padding=True)
-    test_encodings = tokenizer(test_df['sentence'].tolist(), truncation=True, padding=True)
-
-    return train_encodings, test_encodings
-
+        return train_df, test_df
+    except Exception as e:
+        logging.exception("Error loading data: %s", e)
+        raise
 
 class Dataset(torch.utils.data.Dataset):
-    """Custom Dataset class for PyTorch."""
     def __init__(self, encodings, labels):
         self.encodings = encodings
         self.labels = labels
 
     def __getitem__(self, idx):
         item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
-        item['labels'] = torch.tensor(self.labels[idx])
+        item["labels"] = torch.tensor(self.labels[idx])
         return item
 
     def __len__(self):
         return len(self.labels)
 
-def compute_metrics(pred):
-    """Computes accuracy.  You can add other metrics (precision, recall, F1) here."""
-    labels = pred.label_ids
-    preds = pred.predictions.argmax(-1)
-    acc = (preds == labels).mean()
-    return {'accuracy': acc}
-
 def main():
-     # Load and prepare data.  Now only uses train and test.
-    train_df, test_df = load_data(TRAIN_DATA_PATH, TEST_DATA_PATH) #Removed , VALIDATION_DATA_PATH
-    train_df, test_df, label_map = prepare_data(train_df, test_df) #Removed, val_df
+    try:
+        train_df, test_df = load_data()
 
-    # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
-    model = AutoModelForSequenceClassification.from_pretrained(BASE_MODEL_NAME, num_labels=NUM_LABELS) # Use updated NUM_LABELS
+        # Create label map
+        label_map = {label: i for i, label in enumerate(train_df['combined_label'].unique())}
+        logging.debug(f"label_map: {label_map}")
 
-    # Tokenize data.  Now only uses train and test.
-    train_encodings, test_encodings = tokenize_data(train_df, test_df, tokenizer) # Removed val_encodings
+        # Map combined labels to integers
+        train_labels = train_df['combined_label'].map(label_map).tolist()
+        test_labels = test_df['combined_label'].map(label_map).tolist()
+        test_labels = [label if label is not None else 0 for label in test_labels]
 
-    # Create datasets.  Now only train and test.
-    train_dataset = Dataset(train_encodings, train_df['label'].tolist())
-    # val_dataset = Dataset(val_encodings, val_df['label'].tolist()) # No longer needed
-    test_dataset = Dataset(test_encodings, test_df['label'].tolist())
+        # --- Compute Class Weights ---
+        class_weights = compute_class_weight(
+            class_weight='balanced',
+            classes=np.unique(train_labels),
+            y=train_labels
+        )
+        # Convert class weights to tensor and move to device
+        class_weights = torch.tensor(class_weights, dtype=torch.float)
 
+        # Load tokenizer
+        tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
 
-    # Define training arguments
-    training_args = TrainingArguments(
-        output_dir='./results',
-        num_train_epochs=NUM_EPOCHS,
-        per_device_train_batch_size=BATCH_SIZE,
-        per_device_eval_batch_size=BATCH_SIZE * 2,  # Larger batch size for evaluation
-        learning_rate=LEARNING_RATE,
-        weight_decay=0.01,  # Add some weight decay for regularization
-        logging_dir='./logs',
-        logging_steps=10,   # Log more frequently
-        evaluation_strategy="epoch",  # Evaluate at the end of each epoch
-        save_strategy="epoch", # Save at the end of each epoch
-        load_best_model_at_end=True,  # Load the best model (based on validation) at the end
-        metric_for_best_model="accuracy",  # Use accuracy to determine the best model
-        greater_is_better=True, #For accuracy, greater is better
-    )
+        # Tokenize data
+        train_encodings = tokenizer(
+            train_df['sentence'].tolist(), truncation=True, padding=True
+        )
+        test_encodings = tokenizer(
+            test_df['sentence'].tolist(), truncation=True, padding=True
+        )
 
-    # Create Trainer.  Use training data for validation, since we combined val/test.
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=train_dataset,  # Use the *training* dataset for validation during training.
-        tokenizer=tokenizer,
-        compute_metrics=compute_metrics,
-    )
+        # Create datasets
+        train_dataset = Dataset(train_encodings, train_labels)
+        test_dataset = Dataset(test_encodings, test_labels)
 
-    # Train the model
-    trainer.train()
+        # --- Model Training ---
+        num_labels = len(label_map)
+        logging.debug(f"setting NUM_LABELS to {num_labels}")
+        model = DistilBertForSequenceClassification.from_pretrained(
+            "distilbert-base-uncased", num_labels=num_labels
+        )
+        # Check CUDA availability and set device
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logging.info(f"Using device: {device}")
+        model.to(device)  # Move model to the selected device
+        class_weights = class_weights.to(device)  # Move class_weights to the same device as the model
 
-    # Evaluate the model (on the *test* set)
-    eval_results = trainer.evaluate(test_dataset)
-    print(f"Evaluation Results on Test Set: {eval_results}")
+        training_args = TrainingArguments(
+            output_dir="./results",
+            num_train_epochs=3,  # Increased epochs
+            per_device_train_batch_size=8,
+            per_device_eval_batch_size=8,
+            warmup_steps=500,
+            weight_decay=0.01,
+            logging_dir="./logs",
+            logging_steps=10,
+            evaluation_strategy="epoch",
+            save_strategy="epoch",
+            load_best_model_at_end=True,
+            metric_for_best_model="accuracy",
+            greater_is_better=True
+        )
 
-    # Save the fine-tuned model and tokenizer
-    trainer.save_model(FINE_TUNED_MODEL_PATH)
-    tokenizer.save_pretrained(FINE_TUNED_MODEL_PATH)
-    # Save the label_map to a JSON file
-    with open(os.path.join(FINE_TUNED_MODEL_PATH, "label_map.json"), "w") as f:
-        json.dump(label_map, f)
-    print(f"Fine-tuned model, tokenizer, and label map saved to {FINE_TUNED_MODEL_PATH}")
+        def compute_metrics(pred):
+            labels = pred.label_ids
+            preds = pred.predictions.argmax(-1)
+            acc = accuracy_score(labels, preds)
+            return {"accuracy": acc}
 
+        # --- Custom Trainer with Class Weights ---
+        class CustomTrainer(Trainer):
+            def compute_loss(self, model, inputs, return_outputs=False, **kwargs):  # <--- Add **kwargs
+                labels = inputs.pop("labels")
+                outputs = model(**inputs)
+                logits = outputs.logits
+                loss_fct = torch.nn.CrossEntropyLoss(weight=class_weights)
+                loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
+                return (loss, outputs) if return_outputs else loss
 
+        trainer = CustomTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=test_dataset,
+            compute_metrics=compute_metrics,
+            tokenizer=tokenizer,
+        )
+
+        trainer.train()
+
+        # --- Evaluation ---
+        eval_results = trainer.evaluate(test_dataset)
+        logging.info("Evaluation Results on Test Set: %s", eval_results)
+
+        # Get predictions
+        predictions = trainer.predict(test_dataset)
+        preds = np.argmax(predictions.predictions, axis=-1)
+
+        # --- Classification Report ---
+        report = classification_report(test_dataset.labels, preds, target_names=[key for key, value in sorted(label_map.items(), key=lambda item: item[1])], labels=list(label_map.values()))
+        logging.info("Classification Report:\n%s", report)
+
+        # --- Save Model, Tokenizer, and Label Map ---
+        model_save_path = "./fine_tuned_model/"
+        model.save_pretrained(model_save_path)
+        tokenizer.save_pretrained(model_save_path)
+        label_map_save_path = os.path.join(model_save_path, "label_map.json")
+        with open(label_map_save_path, "w") as f:
+            json.dump(label_map, f)
+
+        logging.info(f"Model, tokenizer, and label map saved to {model_save_path}")
+
+    except Exception as e:
+        logging.exception("An error occurred: %s", e)
 
 if __name__ == "__main__":
     main()

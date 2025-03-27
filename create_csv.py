@@ -240,7 +240,27 @@ sentences_data = [
     ("My expertise is essential for the technical aspects of our project.", "Specialist", "Positive"),
     ("I tend to focus narrowly on my specialty, which might limit my broader contributions.", "Specialist", "Neutral"),
     ("I sometimes get too absorbed in technical details, which can be limiting.", "Specialist", "Neutral"),
-    ("I tend to focus narrowly on my area, which might limit my broader contributions.", "Specialist", "Neutral")
+    ("I tend to focus narrowly on my area, which might limit my broader contributions.", "Specialist", "Neutral"),
+    # Add more sentences to balance the classes, particularly for negative sentiments.
+    ("We're running out of time and need to speed things up!", "Shaper", "Negative"),
+    ("This plan is completely unrealistic and will never work.", "Monitor Evaluator", "Negative"),
+    ("I'm feeling overwhelmed and unsupported in this team.", "Teamworker", "Negative"),
+    ("This idea is too radical and impractical for our current resources.", "Plant", "Negative"),
+    ("We're behind schedule and the quality is suffering.", "Completer Finisher", "Negative"),
+    ("No one is listening to my suggestions, and I feel ignored.", "Specialist", "Negative"),
+    ("I'm frustrated with the lack of progress and direction.", "Co-ordinator", "Negative"),
+     ("This project is failing because we didn't explore enough options.", "Resource Investigator", "Negative"),
+    ("I'm struggling to keep up with all the tasks and deadlines.", "Implementer", "Negative"),
+    ("We're heading for a disaster if we don't change course immediately!", "Shaper", "Negative"),
+    ("This plan is riddled with flaws and potential risks.", "Monitor Evaluator", "Negative"),
+    ("The team is uncooperative and difficult to work with.", "Teamworker", "Negative"),
+    ("This idea is completely unoriginal and unlikely to succeed.", "Plant", "Negative"),
+    ("The final product is full of errors and needs major revisions.", "Completer Finisher", "Negative"),
+    ("My expertise is being ignored, and the project is suffering as a result.", "Specialist", "Negative"),
+    ("There's a complete lack of coordination and communication in this team.", "Co-ordinator", "Negative"),
+    ("We missed a crucial opportunity because we weren't proactive enough.", "Resource Investigator", "Negative"),
+    ("I'm completely disorganized and unable to implement this plan.", "Implementer", "Negative")
+
 ]
 
 if __name__ == "__main__":

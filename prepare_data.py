@@ -1,97 +1,94 @@
 # prepare_data.py
 import pandas as pd
 from sklearn.model_selection import train_test_split
+import os
+from imblearn.over_sampling import SMOTE
+from sklearn.preprocessing import LabelEncoder
+import numpy as np  # Import numpy
 
-def prepare_data(input_file="sentences.csv", train_file="train.csv", validation_file = "validation.csv", test_file="test.csv"):
-    """Loads, cleans, and splits data into training, validation, and test sets."""
+def prepare_data(input_file="sentences.csv", train_file="train.csv", test_file="test.csv"):
+    """Loads, cleans, splits, and oversamples data."""
 
-    try:
-        # --- Debugging: Read and print raw lines ---
-        print("DEBUG: Reading raw lines from the file:")
-        with open(input_file, 'r', encoding='utf-8') as f:  # Use utf-8 encoding
-            for i, line in enumerate(f):
-                print(f"  Line {i+1}: {line.rstrip()}")  # Print each line (remove trailing newline)
-        print("DEBUG: Raw lines read complete.\n")
-        # --- End Debugging ---
+    # Load data
+    df = pd.read_csv(input_file, header=None)
+    if len(df.columns) == 3:
+        df.columns = ['sentence', 'belbin_role', 'label']
+    else:
+        print("Error: Input CSV must have 3 columns: sentence, belbin_role, label")
+        return
 
-        # Load data with explicit header names, and comma as separator
-        df = pd.read_csv(
-            input_file,
-            sep=',',           # Explicitly set the separator to a comma.
-            header=None,       # No header row in the input file.
-            names=['sentence', 'belbin_role', 'label'],  # Provide column names.  <- CHANGED!
-            encoding='utf-8',   # Specify UTF-8 encoding (VERY IMPORTANT).
-            quotechar='"',     # Handle quotes correctly.
-            skipinitialspace=True, # Added to skip spaces after comma
-        )
+    # --- Data Cleaning and Preprocessing ---
+    df['belbin_role'].fillna('UnknownRole', inplace=True)
+    df['label'].fillna('UnknownSentiment', inplace=True)
+    df['combined_label'] = df['belbin_role'] + "_" + df['label']
+    df.drop_duplicates(subset=['sentence'], inplace=True)
+    df['sentence'] = df['sentence'].str.strip()
+    df['belbin_role'] = df['belbin_role'].str.strip()
+    df['label'] = df['label'].str.strip()
 
-        # Strip leading/trailing whitespace from *both* columns.
-        df['sentence'] = df['sentence'].str.strip()
-        df['label'] = df['label'].str.strip()
-        df['belbin_role'] = df['belbin_role'].str.strip() # also strip spaces
+    # --- Numerical Encoding ---
+    label_encoder_role = LabelEncoder()
+    df['belbin_role_encoded'] = label_encoder_role.fit_transform(df['belbin_role'])
+    label_encoder_sentiment = LabelEncoder()
+    df['label_encoded'] = label_encoder_sentiment.fit_transform(df['label'])
 
+    # --- Data Splitting ---
+    single_instance_classes = df['combined_label'].value_counts()
+    single_instance_classes = single_instance_classes[single_instance_classes == 1].index.tolist()
+    df_for_splitting = df[~df['combined_label'].isin(single_instance_classes)]
 
-        print("DEBUG: DataFrame loaded:\n", df.head())  # Print first few rows
-        print("DEBUG: DataFrame info:")
-        df.info()  # Print DataFrame info (dtypes, non-null counts)
-        print()
+    train_df, test_df = train_test_split(
+        df_for_splitting, test_size=0.2, random_state=42, stratify=df_for_splitting['combined_label']
+    )
 
-        # Check for missing values *before* any other operations
-        if df.isnull().values.any():
-            print("DEBUG: Missing values found *before* label processing:")
-            print(df.isnull().sum())  # Show count of missing values per column
-            print(df[df.isnull().any(axis=1)])  # Show rows with *any* missing values
-            raise ValueError("Missing values found in the dataset. Please clean your data.")
+    if single_instance_classes:
+        single_instance_df = df[df['combined_label'].isin(single_instance_classes)]
+        train_df = pd.concat([train_df, single_instance_df])
+        print(f"Warning: {len(single_instance_classes)} classes with only one instance were added to the training set.")
 
-        # Check for valid labels and convert to lowercase
-        valid_labels = ["positive", "neutral", "negative"]
-        df['label'] = df['label'].str.lower()  # Convert labels to lowercase
-        invalid_labels = df[~df['label'].isin(valid_labels)]
-        if not invalid_labels.empty:
-            print("Invalid labels found:\n", invalid_labels)
-            raise ValueError("Invalid labels found in the dataset. Labels must be 'positive', 'neutral', or 'negative'.")
+    # --- SMOTE (AFTER Splitting, on Encoded Data) ---
 
-        # Check for valid belbin roles. KEEP SPACES.
-        valid_roles = ['Shaper', 'Implementer', 'Completer Finisher', 'Co-ordinator', 'Teamworker', 'Resource Investigator', 'Plant', 'Monitor Evaluator', 'Specialist']
-        invalid_roles = df[~df['belbin_role'].isin(valid_roles)]
-        if not invalid_roles.empty:
-             print("Invalid roles found:\n", invalid_roles)
-             raise ValueError("Invalid Belbin roles found. Check for correct spelling and spacing.")
+    # 1. Prepare data for SMOTE
+    X_train = train_df[['belbin_role_encoded', 'label_encoded']]
+    y_train = train_df['combined_label']
 
+    # 2. Determine the appropriate k_neighbors value
+    min_samples = y_train.value_counts().min()
+    k_neighbors = min(min_samples - 1, 5)  # Use min_samples -1, but no more than 5
+    if k_neighbors < 1:
+        print("Warning: Some classes have only one instance, even after handling single-instance classes. Skipping SMOTE for those.")
+        # Option 1: Skip SMOTE entirely (simplest)
+        # In this case, just don't apply SMOTE.
+        # train_df_resampled = train_df.copy()  # Keep original training data
+        # Option 2: Use RandomOverSampler (see commented-out code below)
+        # Option 3: Do nothing and proceed
+        #
+        #Let's go with Option 1, and skip the resampling.
+        train_df_resampled = train_df
 
-        # Remove duplicate sentences (keep the first occurrence)
-        df = df.drop_duplicates(subset=['sentence'], keep='first')
-        print(f"DEBUG: Number of rows after removing duplicates: {len(df)}")
-
-
-        # Split the data: 90% train, 10% test.  NO STRATIFICATION.
-        train_df, test_df = train_test_split(df, test_size=0.1, random_state=42, stratify=df['label'])
-        # IMPORTANT:  We are no longer using stratify.  This is a last resort.
-        # No validation set.
-
-        # Save the splits to separate CSV files
-        train_df.to_csv(train_file, index=False)
-        test_df.to_csv(test_file, index=False)
-        #Removed validation file
-        print(f"Data preparation complete.  Created: {train_file}, {test_file}") # Removed validation.csv
-        print(f"Train set size: {len(train_df)}")
-        print(f"Test set size: {len(test_df)}")
-
-
-    except FileNotFoundError:
-        print(f"Error: File '{input_file}' not found. Please make sure it exists.")
-        exit(1)
-    except pd.errors.EmptyDataError:
-        print(f"Error: '{input_file}' is empty. Please provide a valid CSV file.")
-        exit(1)
-    except pd.errors.ParserError:
-        print(f"Error: '{input_file}' could not be parsed.  Is it a valid CSV file?")
-        exit(1)
-    except ValueError as e:
-        print(f"Error: {e}")
-        exit(1)
+    else:
+        # 3. Apply SMOTE with the determined k_neighbors
+        smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
+        X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+    #Option 2:
+    # from imblearn.over_sampling import RandomOverSampler
+    # ros = RandomOverSampler(random_state=42)
+    # X_train_resampled, y_train_resampled = ros.fit_resample(X_train, y_train)
+         # 4. Combine back with the original sentence data
+        train_df_resampled = pd.DataFrame(X_train_resampled, columns=['belbin_role_encoded', 'label_encoded'])
+        train_df_resampled['combined_label'] = y_train_resampled
+        train_df_resampled = train_df_resampled.merge(train_df[['sentence','belbin_role_encoded', 'label_encoded', 'belbin_role', 'label']].drop_duplicates(), on=['belbin_role_encoded', 'label_encoded'], how='left')
 
 
+    # --- Save to CSV ---
+    train_df_resampled[['sentence', 'belbin_role', 'label', 'combined_label']].to_csv(train_file, index=False, header=None)
+    test_df[['sentence', 'belbin_role', 'label', 'combined_label']].to_csv(test_file, index=False, header=None)
+
+    print(f"Prepared data: {len(train_df_resampled)} training samples, {len(test_df)} testing samples")
+    print(f"Train data saved to {train_file}")
+    print(f"Test data saved to {test_file}")
 
 if __name__ == "__main__":
+    if not os.path.exists('.'):
+        os.makedirs('.')
     prepare_data()

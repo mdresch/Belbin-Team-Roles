@@ -1,0 +1,66 @@
+2025-03-25 14:37:35,754 - DEBUG - label_map: {'Shaper_postive': 0, 'Specialist_negative': 1, 'Shaper_negative': 2, 'Completer Finisher_postive': 3, 'Plant_postive': 4, 'Implementer_neutral': 5, 'Completer Finisher_neutral': 6, 'Plant_negative': 7, 'Specialist_postive': 8, 'Co-ordinator_postive': 9, 'Implementer_postive': 10, 'Resource Investigator_postive': 11, 'Co-ordinator_negative': 12, 'Teamworker_neutral': 13, 'Monitor Evaluator_neutral': 14, 'Monitor Evaluator_negative': 15, 'Shaper_neutral': 16, 'Implementer_negative': 17, 'Resource Investigator_neutral': 18, 'Plant_neutral': 19, 'Completer Finisher_negative': 20, 'Co-ordinator_neutral': 21, 'Teamworker_negative': 22, 'Teamworker_postive': 23, 'Resource Investigator_negative': 24, 'Specialist_neutral': 25, 'Monitor Evaluator_postive': 26}
+2025-03-25 14:37:35,775 - DEBUG - Starting new HTTPS connection (1): huggingface.co:443
+2025-03-25 14:37:36,019 - DEBUG - https://huggingface.co:443 "HEAD /distilbert-base-uncased/resolve/main/tokenizer_config.json HTTP/1.1" 200 0
+2025-03-25 14:37:36,305 - DEBUG - setting NUM_LABELS to 27
+2025-03-25 14:37:36,417 - DEBUG - https://huggingface.co:443 "HEAD /distilbert-base-uncased/resolve/main/config.json HTTP/1.1" 200 0
+2025-03-25 14:37:36,529 - DEBUG - https://huggingface.co:443 "HEAD /distilbert-base-uncased/resolve/main/config.json HTTP/1.1" 200 0
+2025-03-25 14:37:36,632 - INFO - Using device: cpu
+2025-03-25 14:37:36,660 - ERROR - An error occurred: Using the `Trainer` with `PyTorch` requires `accelerate>=0.26.0`: Please run `pip install transformers[torch]` or `pip install 'accelerate>=0.26.0'`
+Traceback (most recent call last):
+  File "C:\Users\menno\Source\Repos\ML Emotions\28973519-6585-4260-8ee7-7f45475c0ddc\SynapseNotebook\10e55d78-1201-4fab-8239-3e4034c69fdb\Notebook 4\train.py", line 110, in main
+    training_args = TrainingArguments(
+        output_dir="./results",
+    ...<11 lines>...
+        greater_is_better=True
+    )
+  File "<string>", line 135, in __init__
+  File "C:\Users\menno\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\transformers\training_args.py", line 1808, in __post_init__
+    self.device
+  File "C:\Users\menno\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\transformers\training_args.py", line 2344, in device
+    return self._setup_devices
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\menno\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\transformers\utils\generic.py", line 62, in __get__
+    cached = self.fget(obj)
+  File "C:\Users\menno\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\transformers\training_args.py", line 2214, in _setup_devices
+    raise ImportError(
+    ...<2 lines>...
+    )
+ImportError: Using the `Trainer` with `PyTorch` requires `accelerate>=0.26.0`: Please run `pip install transformers[torch]` or `pip install 'accelerate>=0.26.0'`
+2025-03-25 14:39:12,064 - DEBUG - label_map: {'Shaper_postive': 0, 'Specialist_negative': 1, 'Shaper_negative': 2, 'Completer Finisher_postive': 3, 'Plant_postive': 4, 'Implementer_neutral': 5, 'Completer Finisher_neutral': 6, 'Plant_negative': 7, 'Specialist_postive': 8, 'Co-ordinator_postive': 9, 'Implementer_postive': 10, 'Resource Investigator_postive': 11, 'Co-ordinator_negative': 12, 'Teamworker_neutral': 13, 'Monitor Evaluator_neutral': 14, 'Monitor Evaluator_negative': 15, 'Shaper_neutral': 16, 'Implementer_negative': 17, 'Resource Investigator_neutral': 18, 'Plant_neutral': 19, 'Completer Finisher_negative': 20, 'Co-ordinator_neutral': 21, 'Teamworker_negative': 22, 'Teamworker_postive': 23, 'Resource Investigator_negative': 24, 'Specialist_neutral': 25, 'Monitor Evaluator_postive': 26}
+2025-03-25 14:39:12,190 - DEBUG - https://huggingface.co:443 "HEAD /distilbert-base-uncased/resolve/main/tokenizer_config.json HTTP/1.1" 200 0
+2025-03-25 14:39:12,375 - DEBUG - setting NUM_LABELS to 27
+2025-03-25 14:39:12,488 - DEBUG - https://huggingface.co:443 "HEAD /distilbert-base-uncased/resolve/main/config.json HTTP/1.1" 200 0
+2025-03-25 14:39:12,604 - DEBUG - https://huggingface.co:443 "HEAD /distilbert-base-uncased/resolve/main/config.json HTTP/1.1" 200 0
+2025-03-25 14:39:12,645 - INFO - Using device: cpu
+2025-03-25 14:39:12,649 - ERROR - An error occurred: Using the `Trainer` with `PyTorch` requires `accelerate>=0.26.0`: Please run `pip install transformers[torch]` or `pip install 'accelerate>=0.26.0'`
+Traceback (most recent call last):
+  File "C:\Users\menno\Source\Repos\ML Emotions\28973519-6585-4260-8ee7-7f45475c0ddc\SynapseNotebook\10e55d78-1201-4fab-8239-3e4034c69fdb\Notebook 4\train.py", line 110, in main
+    training_args = TrainingArguments(
+        output_dir="./results",
+    ...<11 lines>...
+        greater_is_better=True
+    )
+  File "<string>", line 135, in __init__
+  File "C:\Users\menno\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\transformers\training_args.py", line 1808, in __post_init__
+    self.device
+  File "C:\Users\menno\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\transformers\training_args.py", line 2344, in device
+    return self._setup_devices
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\menno\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\transformers\utils\generic.py", line 62, in __get__
+    cached = self.fget(obj)
+  File "C:\Users\menno\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\transformers\training_args.py", line 2214, in _setup_devices
+    raise ImportError(
+    ...<2 lines>...
+    )
+ImportError: Using the `Trainer` with `PyTorch` requires `accelerate>=0.26.0`: Please run `pip install transformers[torch]` or `pip install 'accelerate>=0.26.0'`
+2025-03-25 14:39:39,169 - DEBUG - https://huggingface.co:443 "HEAD /distilbert-base-uncased-finetuned-sst-2-english/resolve/main/config.json HTTP/1.1" 200 0
+2025-03-25 14:39:42,837 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:44,748 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:46,401 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:48,220 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:49,843 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:51,715 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:53,553 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:55,076 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:56,743 - ERROR - Fine-tuned model not loaded.  Returning default values.
+2025-03-25 14:39:56,784 - INFO - Appended to ./meeting_analysis_results_belbin_only.csv
