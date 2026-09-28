@@ -59,7 +59,7 @@ The project is structured into several Python files, each with a specific purpos
 3.  **Install Dependencies:**
 
     ```bash
-    pip install pandas google-generativeai transformers torch scikit-learn
+    pip install -r requirements.txt
     ```
 
     *   **Note:** Ensure you have a compatible version of PyTorch installed for your system (CPU or GPU, and the correct CUDA version if using a GPU).  See the PyTorch website ([https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)) for detailed instructions.
