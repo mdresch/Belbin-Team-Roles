@@ -31,6 +31,10 @@ try:
     LOCAL_LLM_API_KEY = getattr(config, 'LOCAL_LLM_API_KEY', 'ollama') # Default API key
 
     LOCAL_MODEL_CONFIGURED = bool(LOCAL_LLM_URL and LOCAL_LLM_MODEL_NAME)
+
+    # Anthropic Claude (optional). Takes priority over local/Gemini when configured.
+    ANTHROPIC_API_KEY = getattr(config, 'ANTHROPIC_API_KEY', None) or os.environ.get('ANTHROPIC_API_KEY')
+    ANTHROPIC_MODEL_NAME = getattr(config, 'ANTHROPIC_MODEL_NAME', 'claude-sonnet-5-5')
     print(f"DEBUG: utils.py accessed config variables. LOCAL_MODEL_CONFIGURED={LOCAL_MODEL_CONFIGURED}")
     if LOCAL_MODEL_CONFIGURED:
         print(f"DEBUG: Local LLM URL: {LOCAL_LLM_URL}, Model: {LOCAL_LLM_MODEL_NAME}")
@@ -272,6 +276,63 @@ def call_local_llm_api(prompt_template, sentence, model_name=LOCAL_LLM_MODEL_NAM
     return None, "LOCAL_MODEL_UNKNOWN_FAILURE"
 
 
+
+# --- Anthropic Claude client ---
+claude_client = None
+if ANTHROPIC_API_KEY:
+    try:
+        import anthropic
+        claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        logging.info(f"Initialized Anthropic client, Model: {ANTHROPIC_MODEL_NAME}")
+    except Exception as e:
+        logging.error(f"Failed to initialize Anthropic client: {e}", exc_info=True)
+        claude_client = None
+
+
+def call_claude_api(prompt_template, sentence, model_name=None, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
+    """Calls the Anthropic Messages API with retries. Returns (text, status_code)."""
+    if not claude_client:
+        return None, "CLAUDE_UNAVAILABLE"
+    model_name = model_name or ANTHROPIC_MODEL_NAME
+    try:
+        formatted_prompt = prompt_template.format(sentence=sentence)
+    except Exception as fmt_err:
+        logging.error(f"Error formatting Claude prompt: {fmt_err}")
+        return None, "PROMPT_FORMAT_ERROR"
+
+    retries = 0
+    while retries < max_retries:
+        try:
+            response = claude_client.messages.create(
+                model=model_name,
+                max_tokens=1000,
+                system="You are an expert assistant. Respond ONLY in the requested format.",
+                messages=[{"role": "user", "content": formatted_prompt}],
+            )
+            if response.stop_reason == "refusal":
+                return None, "SAFETY_BLOCKED"
+            text = "".join(b.text for b in response.content if getattr(b, "type", "") == "text")
+            if text:
+                return text, "SUCCESS"
+            raise ValueError("Empty response from Claude")
+        except Exception as api_err:
+            retries += 1
+            logging.warning(f"Claude API Error (Attempt {retries}/{max_retries}): {api_err}")
+            if retries >= max_retries:
+                return None, "CLAUDE_API_ERROR"
+            time.sleep(max(0.5, delay * (1.5 ** (retries - 1))))
+    return None, "CLAUDE_API_ERROR"
+
+
+def call_llm(prompt_template, sentence, delay=DELAY_SECONDS, max_retries=MAX_RETRIES, allow_local=True):
+    """Routes to Claude if configured, else local LLM (if allowed and up), else Gemini."""
+    if claude_client:
+        return call_claude_api(prompt_template, sentence, delay=delay, max_retries=max_retries)
+    if allow_local and local_model_available:
+        return call_local_llm_api(prompt_template, sentence, max_retries=max_retries)
+    return call_gemini_api(prompt_template, sentence, delay=delay, max_retries=max_retries)
+
+
 # parse_json_response remains the same
 def parse_json_response(response_text):
     # ... (function body) ...
@@ -323,7 +384,7 @@ def get_llm_category(sentence, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
     # ... (function body) ...
     logging.info(f"Getting LLM category for: '{sentence[:50]}...'")
     sentence_snippet = sentence[:50] + '...'
-    response_text, status_code = call_gemini_api(FIRST_LEVEL_PROMPT, sentence, delay=delay, max_retries=max_retries)
+    response_text, status_code = call_llm(FIRST_LEVEL_PROMPT, sentence, delay=delay, max_retries=max_retries, allow_local=False)
     error_label, result_data, error_context = _handle_api_call_result(response_text, status_code, "category", sentence_snippet)
     if error_label:
         return error_label, [], error_context
@@ -353,12 +414,7 @@ def get_llm_belbin_role(sentence, category_prompt_map=BELBIN_ROLE_PROMPTS, delay
         logging.warning(f"Category '{category_lower}' is 'Unknown' or not in prompt map.")
         return "Unknown", [], "Category Unknown or Not Mapped"
     specific_prompt = category_prompt_map[category_lower]
-    if local_model_available:
-        logging.debug("Using Local LLM for Belbin role prediction.")
-        response_text, status_code = call_local_llm_api(specific_prompt, sentence, max_retries=max_retries)
-    else:
-        logging.debug("Using Gemini API for Belbin role prediction (local unavailable).")
-        response_text, status_code = call_gemini_api(specific_prompt, sentence, delay=delay, max_retries=max_retries)
+    response_text, status_code = call_llm(specific_prompt, sentence, delay=delay, max_retries=max_retries)
     error_label, result_data, error_context = _handle_api_call_result(response_text, status_code, f"role (cat: {category_lower})", sentence_snippet)
     if error_label:
         return error_label, [], error_context
@@ -380,12 +436,7 @@ def get_llm_synonyms(sentence, delay=DELAY_SECONDS, max_retries=MAX_RETRIES):
     # ... (function body) ...
     logging.info(f"Getting LLM Belbin role via SYNONYM prompt for: '{sentence[:50]}...'")
     sentence_snippet = sentence[:50] + '...'
-    if local_model_available:
-        logging.debug("Using Local LLM for synonym prediction.")
-        response_text, status_code = call_local_llm_api(SYNONYM_PROMPT, sentence, max_retries=max_retries)
-    else:
-        logging.debug("Using Gemini API for synonym prediction (local unavailable).")
-        response_text, status_code = call_gemini_api(SYNONYM_PROMPT, sentence, delay=delay, max_retries=max_retries)
+    response_text, status_code = call_llm(SYNONYM_PROMPT, sentence, delay=delay, max_retries=max_retries)
     error_label, result_data, error_context = _handle_api_call_result(response_text, status_code, "synonym", sentence_snippet)
     if error_label:
         return error_label, [], error_context
