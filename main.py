@@ -255,7 +255,7 @@ def main():
         sys.exit(1) # Force exit
 
     # --- Load test sentences ---
-    sentences_path = 'sentences.csv' # Assumed relative path
+    sentences_path = os.environ.get('SENTENCES_CSV', 'sentences.csv')
     try:
         logger.info(f"Attempting to load sentences from: {os.path.abspath(sentences_path)}")
         test_sentences_df = pd.read_csv(sentences_path)
